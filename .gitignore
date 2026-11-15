@@ -13,3 +13,13 @@ __pycache__/
 # model weights are a download away; back up the vault instead
 *.gguf
 *.safetensors
+
+# engine build products (c/coli rebuilds these)
+*.o
+c/colibri
+c/colibri.exe
+c/glm
+c/glm.exe
+c/build/
+c/mio_env/
+c/third_party/

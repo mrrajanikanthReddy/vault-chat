@@ -14,7 +14,7 @@ import time
 import bench
 import repo
 import store as st
-from colibri import Colibri, ColibriError, GUIDE, summarize_status
+from colibri import BUNDLED, Colibri, ColibriError, GUIDE, summarize_status
 from memory import CATEGORIES, PROJECT_TYPES
 from orchestrator import Orchestrator, Platform, approve_tool
 from tools import ToolContext, ToolError, fmt_time, parse_when
@@ -85,8 +85,7 @@ class API:
             "/api/colibri/hardware": lambda q: self._colibri().hardware(),
             "/api/colibri/logs": lambda q: {"logs": self._colibri().logs(int(_q(q, "n", 80)),
                                                                           _q(q, "which", "server"))},
-            "/api/colibri/guide": lambda q: {"guide": GUIDE.format(py=self._colibri().python or "python3.12"),
-                                             "problems": self._colibri().problems()},
+            "/api/colibri/guide": lambda q: self.colibri_guide(),
         }.get(route)
         if handler is None:
             raise NotFound(route)
@@ -161,6 +160,11 @@ class API:
         if provider.name == "colibri":
             info["colibri"] = self.colibri_status()
         return info
+
+    def colibri_guide(self) -> dict:
+        c = self._colibri()
+        return {"guide": GUIDE.format(py=c.python or "python3.12", root=c.dir or BUNDLED),
+                "problems": c.problems()}
 
     def _colibri(self) -> Colibri:
         return Colibri(self.p.setting("COLIBRI_DIR") or "", self.p.setting("COLIBRI_PYTHON") or "")

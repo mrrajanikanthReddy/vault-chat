@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""colibri lifecycle helpers, following docs/AI_SETUP.md exactly: every call
-is one of colibri's own commands with a --json result.
+"""colibri lifecycle helpers. Every call is one of the engine's own commands
+(`c/coli ... --json`), not a reimplementation.
 
     ./colibri.py status              # coli status --json
     ./colibri.py hardware            # c/setup_hw.py --json
@@ -28,11 +28,14 @@ from pathlib import Path
 import vaultdb as v
 
 MIN_PYTHON = (3, 10)
+# The engine source ships with this project. A COLIBRI_DIR setting still wins,
+# so an external checkout can be used, but nothing has to be cloned.
+BUNDLED = Path(__file__).resolve().parent
 
 
 def colibri_dir(configured: str = "") -> Path | None:
-    for candidate in (configured, v.setting("COLIBRI_DIR", ""), "~/colibri", "~/src/colibri",
-                      "~/Documents/colibri", "~/code/colibri"):
+    for candidate in (configured, v.setting("COLIBRI_DIR", ""), str(BUNDLED), "~/colibri",
+                      "~/src/colibri", "~/Documents/colibri", "~/code/colibri"):
         if candidate:
             path = Path(candidate).expanduser()
             if (path / "c" / "coli").exists():
@@ -84,8 +87,8 @@ class Colibri:
     def problems(self) -> list[str]:
         out = []
         if not self.dir:
-            out.append("colibri checkout not found. Clone it (git clone https://github.com/JustVugg/colibri) "
-                       "and set COLIBRI_DIR in Model Settings.")
+            out.append("colibri source not found (expected c/coli in this project). "
+                       "Set COLIBRI_DIR if the engine lives somewhere else.")
         if not self.python:
             out.append("colibri needs Python 3.10 or newer, and none was found. On macOS: brew install python@3.12 "
                        "(then set COLIBRI_PYTHON if it is not on PATH).")
@@ -160,23 +163,23 @@ def summarize_status(status: dict) -> dict:
     }
 
 
-GUIDE = """colibri setup (from docs/AI_SETUP.md). Nothing below runs automatically.
+GUIDE = """colibri setup. The engine is c/coli in this
+project. Nothing below runs automatically. Model weights are not
+included; the setup step downloads them only when you say yes.
 
-  0. Python 3.10+ and the code
+  0. Python 3.10+ (vault-chat itself still runs on 3.9)
        brew install python@3.12            # macOS, only if you have no 3.10+
-       git clone https://github.com/JustVugg/colibri ~/colibri
   1. Look at the machine
-       {py} ~/colibri/c/setup_hw.py --json
-       {py} ~/colibri/c/coli setup --list --json
-  2. Install the model you chose (downloads 19 GB or more; asks nothing)
-       {py} ~/colibri/c/coli setup --yes --model qwen3-coder-30b --no-start
+       {py} {root}/c/setup_hw.py --json
+       {py} {root}/c/coli setup --list --json
+  2. Install the model you chose (downloads 19 GB or more)
+       {py} {root}/c/coli setup --yes --model qwen3-coder-30b --no-start
      CPU only:  add --backend cpu
   3. Start it as a background service, once
-       {py} ~/colibri/c/coli start --background --no-browser
-       {py} ~/colibri/c/coli status --json     # wait for server.state == ready
-  4. Point vault-chat at it (the default already is)
-       COLIBRI_BASE_URL=http://127.0.0.1:8000/v1
-  Stop it with:  {py} ~/colibri/c/coli stop
+       {py} {root}/c/coli start --background --no-browser
+       {py} {root}/c/coli status --json     # wait for server.state == ready
+  4. vault-chat already uses http://127.0.0.1:8000/v1
+  Stop it with:  {py} {root}/c/coli stop
 """
 
 
@@ -186,13 +189,13 @@ def main() -> int:
                                             "install"])
     parser.add_argument("model", nargs="?", help="model id for install")
     parser.add_argument("-n", type=int, default=50, help="log lines")
-    parser.add_argument("--dir", default="", help="colibri checkout (default: COLIBRI_DIR or ~/colibri)")
+    parser.add_argument("--dir", default="", help="project folder that contains c/coli")
     parser.add_argument("--python", default="", help="Python 3.10+ to run coli with")
     args = parser.parse_args()
 
     c = Colibri(args.dir, args.python)
     if args.command == "guide":
-        print(GUIDE.format(py=c.python or "python3.12"))
+        print(GUIDE.format(py=c.python or "python3.12", root=c.dir or BUNDLED))
         for p in c.problems():
             print(f"!  {p}")
         return 0

@@ -11,7 +11,7 @@ This repo is the offline AI workstation. Before any design or code change, read 
 
 - Retrieval, not fine-tuning. Updating knowledge means saving a note and re-indexing.
 - colibri is the primary inference runtime (OpenAI-compatible, default `http://127.0.0.1:8000/v1`), reached only through the `LLMProvider` interface in `providers.py`. LM Studio, Ollama and generic OpenAI-compatible servers are optional providers; LM Studio is still the only one that runs MCP tools for `agent.py`.
-- colibri runs as its own process. The app never starts, stops or reloads it implicitly, and never downloads models, installs packages or changes system config without the user saying yes. Follow colibri's `docs/AI_SETUP.md` commands (`coli ... --json`) rather than recreating its setup.
+- The inference engine lives in `c/` (Apache-2.0: `c/LICENSE`, `c/NOTICE`). Do not require a separate colibri checkout. It still runs as its own process: the app never starts, stops or reloads it implicitly, and never downloads models, installs packages or changes system config without the user saying yes. Call `c/coli ... --json` rather than reimplementing the engine.
 - colibri has no embeddings endpoint: keyword search (SQLite FTS5) is the default for notes, memories, code and conversations; a local `VAULT_EMBED_URL` is optional and never an external service.
 - Platform data (conversations, messages, memories, projects, tasks, tool runs, metrics) lives in SQLite (`store.py`) with numbered migrations. Never inject the whole memory or history into a prompt; retrieve within a token budget (`context.py`).
 - Model output is a suggestion. File edits are proposals applied only on approval; `run_command` needs approval, never uses a shell, and every tool call is logged in `tool_runs`.

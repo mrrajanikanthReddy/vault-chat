@@ -49,7 +49,7 @@ SETTINGS = [
     ("USE_NOTES", True, "bool", "Ground chat and agent answers in the notes vault"),
     ("VAULT_EMBED_URL", "", "url", "Optional embeddings server for semantic search (/v1 base URL)"),
     ("VAULT_EMBED_MODEL", "nomic-embed-text", "text", "Embedding model on that server"),
-    ("COLIBRI_DIR", "", "text", "Path to your colibri checkout (for start/stop/status)"),
+    ("COLIBRI_DIR", "", "text", "Folder that contains c/coli (empty = this project)"),
     ("COLIBRI_PYTHON", "", "text", "Python 3.10+ used to run colibri's `coli` (empty = auto)"),
 ]
 SETTING_DEFAULTS = {k: d for k, d, _, _ in SETTINGS}

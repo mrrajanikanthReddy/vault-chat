@@ -69,17 +69,20 @@ restarting the web UI costs nothing.
 
 ### Set up colibri (once)
 
-These steps follow colibri's `docs/AI_SETUP.md`. Nothing here runs
-automatically; the download step is yours to approve.
+Nothing here runs automatically; the download step is yours to approve.
+
+The engine is part of this project, in `c/` (`c/coli` is the launcher). It is
+the Colibri engine, Apache-2.0; `c/LICENSE`, `c/NOTICE` and
+`c/THIRD_PARTY_NOTICES.md` stay with that code. You do not clone anything.
+Model weights are not included.
 
 ```bash
 brew install python@3.12                                  # macOS, only if you have no Python 3.10+
-git clone https://github.com/JustVugg/colibri ~/colibri
-python3.12 ~/colibri/c/setup_hw.py --json                  # what this machine is
-python3.12 ~/colibri/c/coli setup --list --json            # which models fit
-python3.12 ~/colibri/c/coli setup --yes --model qwen3-coder-30b --no-start   # downloads ~19 GB
-python3.12 ~/colibri/c/coli start --background --no-browser
-python3.12 ~/colibri/c/coli status --json                  # wait for server.state == "ready"
+python3.12 c/setup_hw.py --json                            # what this machine is
+python3.12 c/coli setup --list --json                      # which models fit
+python3.12 c/coli setup --yes --model qwen3-coder-30b --no-start   # downloads ~19 GB
+python3.12 c/coli start --background --no-browser
+python3.12 c/coli status --json                            # wait for server.state == "ready"
 ```
 
 `./colibri.py guide` prints the same steps for your machine, and
@@ -427,7 +430,7 @@ The config file lives at:
 | `COLIBRI_BASE_URL` | `http://127.0.0.1:8000/v1` | colibri's OpenAI-compatible endpoint |
 | `COLIBRI_API_KEY` | empty | Only if the server was started with `COLI_API_KEY` |
 | `COLIBRI_KV_SLOTS` | `0` | Match colibri's `--kv-slots` to pin each conversation to a cache slot |
-| `COLIBRI_DIR` | `~/colibri` if present | colibri checkout, for start/stop/status |
+| `COLIBRI_DIR` | this project | Folder that contains `c/coli`. Empty uses this repository |
 | `COLIBRI_PYTHON` | auto | A Python 3.10+ to run `coli` with |
 | `LMSTUDIO_BASE_URL`, `OLLAMA_BASE_URL` | `:1234/v1`, `:11434/v1` | Optional providers for the web UI |
 | `OPENAI_COMPAT_BASE_URL`, `OPENAI_COMPAT_API_KEY` | empty | Any other local OpenAI-compatible server |
@@ -529,7 +532,7 @@ on login" setting in its preferences.
 
 ## Troubleshooting
 
-**"Cannot reach colibri"** — start it: `python3.12 ~/colibri/c/coli start
+**"Cannot reach colibri"** — start it: `python3.12 c/coli start
 --background --no-browser` (or Start on the Model Settings page), then check
 `./colibri.py status`. A 503 means it is still loading the model; wait and
 retry. A "busy" error means its queue is full; retry in a moment.

@@ -110,7 +110,7 @@ def detect_runtime() -> str | None:
     return None
 
 
-_COLIBRI = ("git clone https://github.com/JustVugg/colibri ~/colibri, then follow "
+_COLIBRI = ("the engine is c/coli in this project. Follow "
             "`./colibri.py guide` (Python 3.10+; the model download is a step you run yourself)")
 RUNTIME_HELP = {
     "Linux": _COLIBRI,
@@ -360,7 +360,7 @@ def step_runtime(info: dict | None) -> str | None:
 
     say(WARN, "no inference server running yet — the assistant needs one (colibri by default)")
     print(f"       {RUNTIME_HELP.get(platform.system(), RUNTIME_HELP['Linux'])}")
-    print("       then start it once:  python3.12 ~/colibri/c/coli start --background --no-browser")
+    print("       then start it once:  python3.12 c/coli start --background --no-browser")
 
     rec = (info or {}).get("recommendation") or {}
     chat = rec.get("chat")
