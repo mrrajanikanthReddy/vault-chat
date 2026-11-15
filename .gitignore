@@ -1,0 +1,15 @@
+# search index and conversation data never go into git
+.index/
+*.db
+*.db-wal
+*.db-shm
+.demo/
+
+# local environment
+.venv/
+__pycache__/
+*.pyc
+
+# model weights are a download away; back up the vault instead
+*.gguf
+*.safetensors

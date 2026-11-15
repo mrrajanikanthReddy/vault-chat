@@ -37,6 +37,8 @@ COMMANDS = {
     "vault-index": "index.py",
     "vault-quiz": "quiz.py",
     "vault-hardware": "hardware.py",
+    "vault-colibri": "colibri.py",
+    "vault-bench": "bench.py",
 }
 MIN_PYTHON = (3, 9)
 
@@ -99,6 +101,8 @@ def probe(url: str) -> bool:
 
 
 def detect_runtime() -> str | None:
+    if probe("http://127.0.0.1:8000/health"):
+        return "colibri"
     if probe("http://127.0.0.1:1234/v1/models"):
         return "lmstudio"
     if probe("http://127.0.0.1:11434/api/tags"):
@@ -106,10 +110,12 @@ def detect_runtime() -> str | None:
     return None
 
 
+_COLIBRI = ("git clone https://github.com/JustVugg/colibri ~/colibri, then follow "
+            "`./colibri.py guide` (Python 3.10+; the model download is a step you run yourself)")
 RUNTIME_HELP = {
-    "Linux": "curl -fsSL https://lmstudio.ai/install.sh | bash && lms server start",
-    "Darwin": "Download LM Studio from lmstudio.ai, or: brew install --cask lm-studio",
-    "Windows": "irm https://lmstudio.ai/install.ps1 | iex",
+    "Linux": _COLIBRI,
+    "Darwin": "brew install python@3.12 (if you have no Python 3.10+); " + _COLIBRI,
+    "Windows": "install Python 3.10+ from python.org; " + _COLIBRI,
 }
 
 
@@ -352,16 +358,17 @@ def step_runtime(info: dict | None) -> str | None:
         say(OK, f"model runtime detected: {found}")
         return found
 
-    say(WARN, "no model runtime running yet — the tools need one")
+    say(WARN, "no inference server running yet — the assistant needs one (colibri by default)")
     print(f"       {RUNTIME_HELP.get(platform.system(), RUNTIME_HELP['Linux'])}")
+    print("       then start it once:  python3.12 ~/colibri/c/coli start --background --no-browser")
 
     rec = (info or {}).get("recommendation") or {}
     chat = rec.get("chat")
     if chat:
-        print(f"       then load the two models chosen for this machine:")
+        print(f"       LM Studio and Ollama still work as optional providers:")
         print(f"         lms load {chat['lmstudio']} --yes")
         print(f"         lms load {rec['embed']['lmstudio']} --yes")
-        print(f"       or with Ollama:")
+        print(f"       or:")
         print(f"         ollama pull {chat['ollama']}")
         print(f"         ollama pull {rec['embed']['ollama']}")
     return None

@@ -1,0 +1,40 @@
+---
+description: Default architecture for this private local AI workstation. Apply on every change.
+alwaysApply: true
+---
+
+# Offline AI workstation
+
+This repo is the offline AI workstation. Before any design or code change, read and follow `~/.cursor/skills-cursor/offline-ai-workstation/SKILL.md`. Read `reference.md` beside it when changing hardware sizing, the model catalog, config keys, or the LM Studio API. Do not re-litigate the decisions in that skill, except where this rule supersedes it (the runtime, below).
+
+## Locked decisions
+
+- Retrieval, not fine-tuning. Updating knowledge means saving a note and re-indexing.
+- colibri is the primary inference runtime (OpenAI-compatible, default `http://127.0.0.1:8000/v1`), reached only through the `LLMProvider` interface in `providers.py`. LM Studio, Ollama and generic OpenAI-compatible servers are optional providers; LM Studio is still the only one that runs MCP tools for `agent.py`.
+- colibri runs as its own process. The app never starts, stops or reloads it implicitly, and never downloads models, installs packages or changes system config without the user saying yes. Follow colibri's `docs/AI_SETUP.md` commands (`coli ... --json`) rather than recreating its setup.
+- colibri has no embeddings endpoint: keyword search (SQLite FTS5) is the default for notes, memories, code and conversations; a local `VAULT_EMBED_URL` is optional and never an external service.
+- Platform data (conversations, messages, memories, projects, tasks, tool runs, metrics) lives in SQLite (`store.py`) with numbered migrations. Never inject the whole memory or history into a prompt; retrieve within a token budget (`context.py`).
+- Model output is a suggestion. File edits are proposals applied only on approval; `run_command` needs approval, never uses a shell, and every tool call is logged in `tool_runs`.
+- Continue is the editor integration. Keep per-role models (chat, edit, autocomplete, embed).
+- Search is an exact NumPy scan. Do not add a vector database.
+- `allowed_tools` is the security boundary. Refuse any agent profile whose MCP servers omit it. Keep an allowlist to five or six tools.
+- Enable autocomplete only when the 1.5B base model predicts at least 25 tok/s.
+- Spend spare RAM on quant precision, not a larger parameter count.
+- Bind `127.0.0.1` only. Do not add auth and do not listen on other interfaces.
+- Prefer GGUF or safetensors. Do not load legacy `.bin` or `.pt` weights.
+- A run that reads untrusted retrieved text gets no file-touching tools.
+- Keep `.index/` out of git. Back up the vault, never the models.
+
+## Sizing
+
+Use the skill formulas. Threads are physical cores, minus one when there are more than four. Never use logical cores. Apple Silicon unified memory is RAM, not separate VRAM. Rank models that fit and clear 8 tok/s by size descending; if none clear 8, rank by speed descending.
+
+## Do not reintroduce
+
+- macOS probes read sysctl through libc (`ctypes`) and `os.sysconf` first. A missing `sysctl` on `PATH` must not fall back to 8 GB RAM.
+- Slow machines with nothing at 8 tok/s get the fastest fitting model, not the largest.
+- The catalog includes a 3B model so an 8 GB machine still gets a recommendation.
+- Tests use `zlib.crc32`, not `hash()`.
+- Chat retrieval stays on `-k`, `--min-score`, and `--max-context-chars`.
+- A changed embedding model makes `index.py` refuse to run until `--rebuild`.
+- A per-file retrieval cap is a counter, not a `set`.

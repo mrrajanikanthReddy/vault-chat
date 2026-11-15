@@ -1,13 +1,16 @@
 """Shared plumbing for vault-chat: config, SQLite storage, model calls.
 
-Two backends are supported and auto-detected:
+Three backends are supported and auto-detected, in this order:
 
+  colibri   colibri's OpenAI-compatible gateway on :8000 (the default). It has
+            no embeddings endpoint, so notes are searched by keyword unless
+            VAULT_EMBED_URL points at a server that embeds.
   lmstudio  OpenAI-compatible server on :1234, plus the /api/v1/chat endpoint
-            that executes MCP tools server-side (LM Studio 0.4.0+).
-  ollama    The native /api/* endpoints on :11434.
+            that executes MCP tools server-side (LM Studio 0.4.0+). Optional.
+  ollama    The native /api/* endpoints on :11434. Optional.
 
-Everything here is stdlib plus numpy. The only network destinations are those
-two loopback addresses.
+Everything here is stdlib plus numpy. The only network destinations are the
+loopback addresses above, or URLs the user configured.
 """
 
 from __future__ import annotations
@@ -62,6 +65,11 @@ def setting(key: str, default: str) -> str:
 OLLAMA_HOST = setting("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 LMSTUDIO_HOST = setting("LMSTUDIO_HOST", "http://127.0.0.1:1234").rstrip("/")
 LM_API_TOKEN = setting("LM_API_TOKEN", "")
+COLIBRI_BASE_URL = setting("COLIBRI_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
+COLIBRI_API_KEY = setting("COLIBRI_API_KEY", "")
+# Optional OpenAI-compatible /v1/embeddings server for semantic note search
+# when the chat backend is colibri, which does not embed.
+EMBED_URL = setting("VAULT_EMBED_URL", "").rstrip("/")
 
 VAULT = Path(setting("VAULT_DIR", "~/vault")).expanduser()
 DB_PATH = Path(setting("VAULT_DB", str(VAULT / ".index" / "vault.db"))).expanduser()
@@ -71,10 +79,14 @@ NUM_CTX = int(setting("VAULT_NUM_CTX", "8192"))
 # usually makes CPU inference slower, not faster.
 NUM_THREADS = int(setting("VAULT_THREADS", "0"))
 
-# "auto" probes LM Studio first, then Ollama.
+# "auto" probes colibri first, then LM Studio, then Ollama.
 BACKEND = setting("VAULT_BACKEND", "auto").lower()
 
 DEFAULT_MODELS = {
+    "colibri": {
+        "embed": "",  # no embeddings endpoint; see EMBED_URL
+        "chat": "",   # whatever model the running colibri server reports
+    },
     "lmstudio": {
         "embed": "text-embedding-nomic-embed-text-v1.5",
         "chat": "qwen2.5-coder-7b-instruct",
@@ -127,6 +139,16 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_by_session ON messages(session_id);
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    heading, text, content='chunks', content_rowid='id', tokenize='porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON chunks BEGIN
+    INSERT INTO chunks_fts(rowid, heading, text) VALUES (new.id, new.heading, new.text);
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON chunks BEGIN
+    INSERT INTO chunks_fts(chunks_fts, rowid, heading, text)
+    VALUES ('delete', old.id, old.heading, old.text);
+END;
 """
 
 
@@ -151,8 +173,10 @@ def backend() -> str:
     global _resolved
     if _resolved:
         return _resolved
-    if BACKEND in ("lmstudio", "ollama"):
+    if BACKEND in ("colibri", "lmstudio", "ollama"):
         _resolved = BACKEND
+    elif _probe(f"{COLIBRI_BASE_URL}/models"):
+        _resolved = "colibri"
     elif _probe(f"{LMSTUDIO_HOST}/v1/models"):
         _resolved = "lmstudio"
     elif _probe(f"{OLLAMA_HOST}/api/tags"):
@@ -160,6 +184,7 @@ def backend() -> str:
     else:
         sys.exit(
             f"No model runtime found.\n"
+            f"  colibri expected at   {COLIBRI_BASE_URL}  (coli start --background)\n"
             f"  LM Studio expected at {LMSTUDIO_HOST}  (lms server start)\n"
             f"  Ollama expected at    {OLLAMA_HOST}  (ollama serve)\n"
             f"Set VAULT_BACKEND to force one."
@@ -168,19 +193,46 @@ def backend() -> str:
 
 
 def host() -> str:
-    return LMSTUDIO_HOST if backend() == "lmstudio" else OLLAMA_HOST
+    return {"colibri": COLIBRI_BASE_URL, "lmstudio": LMSTUDIO_HOST}.get(backend(), OLLAMA_HOST)
 
 
 def default_model(role: str) -> str:
     return DEFAULT_MODELS[backend()][role]
 
 
+def has_embedder() -> bool:
+    """Whether semantic search is possible. With colibri it needs a separate
+    embeddings server; without one, retrieval falls back to keyword search."""
+    return backend() != "colibri" or bool(EMBED_URL)
+
+
 def embed_model() -> str:
-    return setting("VAULT_EMBED_MODEL", default_model("embed"))
+    """The embed model's name, or "none" when retrieval is keyword-only.
+    index.py stores it, so switching between the two forces --rebuild."""
+    if not has_embedder():
+        return "none"
+    return setting("VAULT_EMBED_MODEL", default_model("embed") or "nomic-embed-text")
 
 
 def chat_model() -> str:
-    return setting("VAULT_CHAT_MODEL", default_model("chat"))
+    configured = setting("VAULT_CHAT_MODEL", default_model("chat"))
+    if configured or backend() != "colibri":
+        return configured
+    return _colibri().active_model()
+
+
+_colibri_provider = None
+
+
+def _colibri():
+    """The shared colibri provider; the model stays loaded server-side."""
+    global _colibri_provider
+    if _colibri_provider is None:
+        from providers import ColibriProvider
+        _colibri_provider = ColibriProvider(
+            COLIBRI_BASE_URL, setting("VAULT_CHAT_MODEL", ""), COLIBRI_API_KEY,
+            timeout=float(setting("VAULT_TIMEOUT", "600")))
+    return _colibri_provider
 
 
 # ------------------------------------------------------------------ http
@@ -215,7 +267,16 @@ def embed(texts: list[str]) -> np.ndarray:
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
 
-    if backend() == "lmstudio":
+    if backend() == "colibri":
+        if not EMBED_URL:
+            raise SystemExit("No embeddings server configured (colibri does not embed). "
+                             "Set VAULT_EMBED_URL, or use keyword search.")
+        from providers import EmbeddingProvider, ProviderError
+        try:
+            vectors = EmbeddingProvider(EMBED_URL, embed_model()).embed(texts)
+        except ProviderError as exc:
+            raise SystemExit(str(exc)) from exc
+    elif backend() == "lmstudio":
         data = _request("/v1/embeddings", {"model": embed_model(), "input": texts})
         vectors = [row["embedding"] for row in data["data"]]
     else:
@@ -239,6 +300,15 @@ def embed(texts: list[str]) -> np.ndarray:
 def chat_stream(messages: list[dict], model: str | None = None, temperature: float = 0.2):
     """Yield response text as it is generated, so words appear instead of
     you staring at nothing for a minute."""
+    if backend() == "colibri":
+        from providers import GenParams, ProviderError
+        try:
+            yield from _colibri().stream_chat(messages, GenParams(temperature=temperature),
+                                              model=model or None)
+        except ProviderError as exc:
+            raise SystemExit(f"{exc}\n{exc.hint}".strip()) from exc
+        return
+
     model = model or chat_model()
 
     if backend() == "lmstudio":
@@ -331,7 +401,51 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    # Indexes built before the keyword table existed get it filled once.
+    if get_meta(conn, "fts_version") != "1":
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+        set_meta(conn, "fts_version", "1")
+        conn.commit()
     return conn
+
+
+STOPWORDS = frozenset(
+    "a an and are as at be but by can could did do does for from had has have how i if in "
+    "into is it its me my no not of on or our so than that the their them then there these "
+    "they this to was we were what when where which who why will with would you your about "
+    "please tell show give help need want know just also any some all more most".split()
+)
+
+
+def fts_query(text: str, max_terms: int = 12) -> str:
+    """Turn free text into a safe FTS5 OR-query. Every term is quoted, so
+    user input can never inject FTS operators."""
+    import re
+    seen: list[str] = []
+    for raw in re.findall(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*", text):
+        for word in [raw, *re.split(r"[_.\-]", raw)]:
+            w = word.lower().strip(".-_")
+            if len(w) < 2 or w in STOPWORDS or w in seen:
+                continue
+            seen.append(w)
+    return " OR ".join(f'"{w}"' for w in seen[:max_terms])
+
+
+def keyword_search_chunks(conn: sqlite3.Connection, question: str, limit: int) -> list[tuple[float, sqlite3.Row]]:
+    """BM25 over note passages, scored 0..1 relative to the best hit."""
+    query = fts_query(question)
+    if not query:
+        return []
+    rows = conn.execute(
+        "SELECT c.id, c.path, c.ord, c.heading, c.text, bm25(chunks_fts) AS rank "
+        "FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid "
+        "WHERE chunks_fts MATCH ? ORDER BY rank LIMIT ?",
+        (query, limit),
+    ).fetchall()
+    if not rows:
+        return []
+    best = min(r["rank"] for r in rows) or -1.0
+    return [(float(r["rank"] / best) if best else 0.0, r) for r in rows]
 
 
 def get_meta(conn: sqlite3.Connection, key: str) -> str | None:

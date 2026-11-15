@@ -89,11 +89,14 @@ def reindex_file(conn, path: Path, body: str) -> int:
         # Prefixing the heading gives the embedding a little context about
         # where the passage sits, which measurably improves retrieval.
         payload = [f"{h}\n\n{t}" if h else t for h, t in batch]
-        vectors = v.embed(payload)
+        # Keyword-only indexes (no embedder) store empty vectors; the FTS
+        # table filled by trigger is what gets searched.
+        vectors = v.embed(payload) if v.embed_model() != "none" else [b""] * len(batch)
         conn.executemany(
             "INSERT INTO chunks(path, ord, heading, text, vec) VALUES(?,?,?,?,?)",
             [
-                (rel, start + i, batch[i][0], batch[i][1], v.pack(vectors[i]))
+                (rel, start + i, batch[i][0], batch[i][1],
+                 vectors[i] if isinstance(vectors[i], bytes) else v.pack(vectors[i]))
                 for i in range(len(batch))
             ],
         )

@@ -7,6 +7,8 @@ Exercises indexing, incremental updates, deletion, retrieval ranking, the
 per-file cap, review scheduling, agent profiles, and the tool allowlist.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

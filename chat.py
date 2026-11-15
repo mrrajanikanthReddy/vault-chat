@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""A local chat screen for your model, in the shape you already know.
+"""The local assistant: chat, coding and personal agent, in one web UI.
 
-One file, standard library only, no build step and no CDN — so it works with
-the network cable unplugged. Serves a web UI on localhost that streams tokens
-as they generate, shows which of your notes an answer came from, and switches
-between the same profiles the command-line agent uses.
+Standard library only, no build step and no CDN, so it works with the
+network cable unplugged. Inference comes from the configured provider
+(colibri by default, a separate process this server never starts or stops);
+conversations, memories, projects and metrics live in a local SQLite file.
+The original /api/chat, /api/meta and /api/session* endpoints still work.
 
     ./chat.py                 # then open http://127.0.0.1:8737
     ./chat.py --open          # and launch the browser for you
@@ -20,6 +21,7 @@ import json
 import sys
 import threading
 import webbrowser
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -27,313 +29,16 @@ import agent
 import ask
 import vaultdb as v
 
-PAGE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vault Chat</title>
-<style>
-  :root {
-    --bg: #131314; --panel: #1a1a1c; --edge: #2a2a2e; --text: #e6e6e8;
-    --dim: #9a9aa2; --faint: #6a6a72; --accent: #7aa2f7; --warn: #e0af68;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--text);
-    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  }
-  aside {
-    width: 230px; flex: none; border-right: 1px solid var(--edge); padding: 16px;
-    display: flex; flex-direction: column; gap: 14px; background: var(--panel);
-  }
-  aside h1 { font-size: 13px; margin: 0; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
-  label { font-size: 11px; color: var(--faint); display: block; margin-bottom: 5px;
-          text-transform: uppercase; letter-spacing: .05em; }
-  select, button {
-    width: 100%; background: #202024; color: var(--text); border: 1px solid var(--edge);
-    border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13px; cursor: pointer;
-  }
-  select:hover, button:hover { border-color: #3a3a40; }
-  #desc { font-size: 12px; color: var(--faint); line-height: 1.5; }
-  #meta { margin-top: auto; font-size: 11px; color: var(--faint); line-height: 1.7;
-          border-top: 1px solid var(--edge); padding-top: 12px; }
-  #meta b { color: var(--dim); font-weight: 500; }
-  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  #log { flex: 1; overflow-y: auto; padding: 28px 0; }
-  .turn { max-width: 780px; margin: 0 auto 26px; padding: 0 28px; }
-  .who { font-size: 11px; color: var(--faint); text-transform: uppercase;
-         letter-spacing: .06em; margin-bottom: 7px; }
-  .body { white-space: pre-wrap; word-wrap: break-word; }
-  .turn.user .body {
-    background: var(--panel); border: 1px solid var(--edge);
-    border-radius: 8px; padding: 11px 14px;
-  }
-  .body code { background: #202024; padding: 1px 5px; border-radius: 4px;
-               font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
-  .body pre { background: #0e0e0f; border: 1px solid var(--edge); border-radius: 8px;
-              padding: 12px 14px; overflow-x: auto; margin: 10px 0; }
-  .body pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.55; }
-  .cites { margin-top: 12px; border-top: 1px solid var(--edge); padding-top: 10px; }
-  .cites div { font-size: 12px; color: var(--faint); padding: 2px 0; }
-  .cites b { color: var(--dim); font-weight: 500; }
-  .tool { font-size: 12px; color: var(--warn); font-family: ui-monospace, Menlo, monospace;
-          padding: 3px 0; }
-  .stats { font-size: 11px; color: var(--faint); margin-top: 9px; }
-  .err { color: #f7768e; }
-  footer { border-top: 1px solid var(--edge); padding: 16px 28px 20px; }
-  .composer { max-width: 780px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
-  textarea {
-    flex: 1; resize: none; background: var(--panel); color: var(--text); font: inherit;
-    border: 1px solid var(--edge); border-radius: 8px; padding: 11px 13px;
-    max-height: 200px; min-height: 44px;
-  }
-  textarea:focus { outline: none; border-color: #3a3a45; }
-  .composer button { width: auto; padding: 11px 18px; }
-  .hint { max-width: 780px; margin: 8px auto 0; font-size: 11px; color: var(--faint); }
-  .hist { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  #sessions { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -6px; }
-  .sess { display: flex; align-items: center; gap: 6px; padding: 6px; border-radius: 6px;
-          cursor: pointer; font-size: 12.5px; color: var(--dim); }
-  .sess:hover, .sess.on { background: #202024; }
-  .sess.on { color: var(--text); }
-  .sess .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sess .x { width: auto; border: none; background: none; padding: 0 5px; color: var(--faint); }
-  .sess .x:hover { color: #f7768e; }
-  .none { font-size: 12px; color: var(--faint); padding: 6px; }
-  .blink::after { content: "▍"; color: var(--accent); animation: b 1s steps(2) infinite; }
-  @keyframes b { 0%,50% { opacity: 1 } 51%,100% { opacity: 0 } }
-</style>
-</head>
-<body>
-<aside>
-  <h1>Vault Chat</h1>
-  <div>
-    <label for="profile">Profile</label>
-    <select id="profile"></select>
-    <div id="desc" style="margin-top:8px"></div>
-  </div>
-  <button id="reset">New conversation</button>
-  <div class="hist">
-    <label>History</label>
-    <div id="sessions"></div>
-  </div>
-  <div id="meta"></div>
-</aside>
-<main>
-  <div id="log"></div>
-  <footer>
-    <div class="composer">
-      <textarea id="input" rows="1" placeholder="Ask something…" autofocus></textarea>
-      <button id="send">Send</button>
-    </div>
-    <div class="hint">Enter sends · Shift+Enter for a new line · Esc stops generating</div>
-  </footer>
-</main>
-<script>
-const log = document.getElementById("log");
-const input = document.getElementById("input");
-const sendBtn = document.getElementById("send");
-const profileSel = document.getElementById("profile");
-const descEl = document.getElementById("desc");
-let history = [];
-let sessionId = null;
-let profiles = {};
-let controller = null;
+WEB = Path(__file__).resolve().parent / "web"
 
-function esc(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
-// Escape first, then add structure — so model output can never inject markup.
-function render(src) {
-  let out = esc(src);
-  out = out.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => "<pre><code>" + code + "</code></pre>");
-  out = out.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  out = out.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-  return out;
-}
-
-function addTurn(who, cls) {
-  const wrap = document.createElement("div");
-  wrap.className = "turn " + cls;
-  wrap.innerHTML = '<div class="who">' + who + '</div><div class="body"></div>';
-  log.appendChild(wrap);
-  log.scrollTop = log.scrollHeight;
-  return wrap.querySelector(".body");
-}
-
-async function loadMeta() {
-  const r = await fetch("/api/meta");
-  const m = await r.json();
-  profiles = m.profiles;
-  profileSel.innerHTML = "";
-  for (const [name, p] of Object.entries(profiles)) {
-    const o = document.createElement("option");
-    o.value = name; o.textContent = name;
-    profileSel.appendChild(o);
-  }
-  profileSel.value = m.default_profile;
-  showDesc();
-  document.getElementById("meta").innerHTML =
-    "<b>runtime</b> " + m.backend + "<br><b>model</b> " + m.model +
-    "<br><b>vault</b> " + m.vault + "<br><b>notes</b> " + m.chunks + " passages indexed";
-}
-
-function showDesc() {
-  const p = profiles[profileSel.value] || {};
-  let d = p.description || "";
-  if (p.tools && p.tools.length) d += " Tools: " + p.tools.join(", ") + ".";
-  descEl.textContent = d;
-}
-profileSel.onchange = showDesc;
-
-document.getElementById("reset").onclick = () => {
-  if (controller) return;
-  history = []; sessionId = null; log.innerHTML = ""; input.focus();
-  loadSessions();
-};
-
-async function loadSessions() {
-  const box = document.getElementById("sessions");
-  try {
-    const list = await (await fetch("/api/sessions")).json();
-    box.innerHTML = "";
-    if (!list.length) {
-      const none = document.createElement("div");
-      none.className = "none"; none.textContent = "Nothing saved yet.";
-      box.appendChild(none);
-      return;
-    }
-    for (const s of list) {
-      const row = document.createElement("div");
-      row.className = "sess" + (s.id === sessionId ? " on" : "");
-      const t = document.createElement("span");
-      t.className = "t"; t.textContent = s.title; t.title = s.title;   // textContent: titles are untrusted
-      const x = document.createElement("button");
-      x.className = "x"; x.textContent = "\u00d7"; x.title = "Delete";
-      row.onclick = () => openSession(s.id);
-      x.onclick = ev => { ev.stopPropagation(); deleteSession(s.id); };
-      row.append(t, x);
-      box.appendChild(row);
-    }
-  } catch (e) { /* history is a convenience; never block chatting on it */ }
-}
-
-async function openSession(id) {
-  if (controller) return;              // not while a reply is streaming
-  const res = await fetch("/api/session?id=" + id);
-  if (!res.ok) return;
-  const s = await res.json();
-  sessionId = s.id;
-  history = s.messages;
-  log.innerHTML = "";
-  if (profiles[s.profile]) { profileSel.value = s.profile; showDesc(); }
-  for (const m of history) {
-    const user = m.role === "user";
-    const body = addTurn(user ? "you" : s.profile, user ? "user" : "bot");
-    if (user) body.textContent = m.content; else body.innerHTML = render(m.content);
-  }
-  log.scrollTop = log.scrollHeight;
-  loadSessions();
-  input.focus();
-}
-
-async function deleteSession(id) {
-  if (!confirm("Delete this conversation?")) return;
-  await fetch("/api/session/delete", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id }),
-  });
-  if (id === sessionId) { sessionId = null; history = []; log.innerHTML = ""; }
-  loadSessions();
-}
-
-input.addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-  if (e.key === "Escape" && controller) controller.abort();
-});
-input.addEventListener("input", () => {
-  input.style.height = "auto";
-  input.style.height = Math.min(input.scrollHeight, 200) + "px";
-});
-sendBtn.onclick = () => controller ? controller.abort() : send();
-
-async function send() {
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = ""; input.style.height = "auto";
-  addTurn("you", "user").textContent = text;
-  history.push({ role: "user", content: text });
-
-  const body = addTurn(profileSel.value, "bot");
-  body.classList.add("blink");
-  sendBtn.textContent = "Stop";
-  controller = new AbortController();
-
-  let answer = "", cites = null, tools = [], stats = null;
-  const paint = () => {
-    let html = render(answer);
-    for (const t of tools) html = '<div class="tool">· ' + esc(t) + "</div>" + html;
-    if (cites && cites.length) {
-      html += '<div class="cites">' + cites.map(c =>
-        "<div><b>[" + c.n + "]</b> " + esc(c.where) + " · " + c.score + "</div>").join("") + "</div>";
-    }
-    if (stats) html += '<div class="stats">' + esc(stats) + "</div>";
-    body.innerHTML = html;
-    log.scrollTop = log.scrollHeight;
-  };
-
-  try {
-    const res = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: profileSel.value, messages: history,
-                             save: true, session: sessionId }),
-      signal: controller.signal,
-    });
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const ev = JSON.parse(line.slice(5));
-        if (ev.type === "token") { answer += ev.text; paint(); }
-        else if (ev.type === "citations") { cites = ev.items; paint(); }
-        else if (ev.type === "tool") { tools.push(ev.text); paint(); }
-        else if (ev.type === "stats") { stats = ev.text; paint(); }
-        else if (ev.type === "session") { sessionId = ev.id; }
-        else if (ev.type === "error") {
-          body.innerHTML = '<span class="err">' + esc(ev.text) + "</span>";
-        }
-      }
-    }
-  } catch (e) {
-    if (e.name !== "AbortError") body.innerHTML = '<span class="err">' + esc(String(e)) + "</span>";
-  }
-
-  body.classList.remove("blink");
-  sendBtn.textContent = "Send";
-  controller = null;
-  if (answer) history.push({ role: "assistant", content: answer });
-  else history.pop();
-  paint();
-  input.focus();
-  loadSessions();
-}
-
-loadMeta();
-loadSessions();
-</script>
-</body>
-</html>
-"""
+def page() -> bytes:
+    """One self-contained page: the stylesheet and script are inlined, so the
+    UI makes no request beyond this server and works with the network off."""
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    css = (WEB / "app.css").read_text(encoding="utf-8")
+    js = (WEB / "app.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
+    return (html.replace("/*__CSS__*/", css).replace("//__JS__", js)).encode("utf-8")
 
 
 # ------------------------------------------------------------------ server
@@ -388,13 +93,84 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, obj) -> None:
         self._send(code, json.dumps(obj).encode(), "application/json")
 
+    def _host_ok(self) -> bool:
+        """Refuse requests addressed to any other name. Without this, a web
+        page could rebind its own domain to 127.0.0.1 and read the API."""
+        host = (self.headers.get("Host") or "").strip().lower()
+        name = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
+        allowed = {"127.0.0.1", "localhost", "[::1]", self.server.server_address[0]}  # type: ignore[attr-defined]
+        if name in allowed:
+            return True
+        self._send(403, b"unexpected Host header", "text/plain")
+        return False
+
+    def _platform_api(self):
+        return self.server.api()  # type: ignore[attr-defined]
+
+    def _api_get(self, route: str, query: dict) -> None:
+        import api
+        try:
+            self._json(200, self._platform_api().get(route, query))
+        except api.NotFound:
+            self._send(404, b"not found", "text/plain")
+        except api.BadRequest as exc:
+            self._json(400, {"error": str(exc)})
+        except Exception as exc:  # report, never kill the server
+            self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def _api_post(self, route: str) -> None:
+        import api
+        payload = self._json_body()
+        if payload is None:
+            return
+        if route == "/api/turn":
+            self._stream_turn(payload)
+            return
+        try:
+            self._json(200, self._platform_api().post(route, payload))
+        except api.NotFound:
+            self._send(404, b"not found", "text/plain")
+        except api.BadRequest as exc:
+            self._json(400, {"error": str(exc)})
+        except Exception as exc:
+            self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
+
+    def _stream_turn(self, payload: dict) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        events = self._platform_api().turn(payload)
+        try:
+            for event in events:
+                self._event(event)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # Stop: closing the generator below saves the partial answer
+        except Exception as exc:
+            try:
+                self._event({"type": "error", "kind": "server", "message": f"{type(exc).__name__}: {exc}"})
+            except OSError:
+                pass
+        finally:
+            events.close()
+
     # -- routes
 
     def do_GET(self) -> None:
+        if not self._host_ok():
+            return
         parts = urlsplit(self.path)
         route = parts.path
         if route == "/":
-            self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            try:
+                body = page()
+            except OSError as exc:
+                self._send(500, f"web UI files missing: {exc}".encode(), "text/plain")
+                return
+            self._send(200, body, "text/html; charset=utf-8")
+        elif route.startswith("/api/") and route not in ("/api/meta", "/api/sessions", "/api/session"):
+            self._api_get(route, parse_qs(parts.query))
         elif route == "/api/meta":
             self._json(200, self.meta())
         elif route == "/api/sessions":
@@ -429,7 +205,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self) -> None:
+        if not self._host_ok():
+            return
         route = urlsplit(self.path).path
+        if route.startswith("/api/") and route not in ("/api/session/delete", "/api/chat"):
+            self._api_post(route)
+            return
         if route == "/api/session/delete":
             payload = self._json_body()
             if payload is None:
@@ -631,6 +412,20 @@ class Server(ThreadingHTTPServer):
     k = 6
     min_score = 0.25
     max_context_chars = 6000
+    store_path = None
+    _api = None
+    _api_lock = threading.Lock()
+
+    def api(self):
+        """Built on first use, so the legacy endpoints never touch the
+        platform database."""
+        with self._api_lock:
+            if self._api is None:
+                import api
+                from orchestrator import Platform
+                self._api = api.API(Platform(self.store_path, {
+                    "k": self.k, "min_score": self.min_score, "max_context_chars": self.max_context_chars}))
+            return self._api
 
 
 def main() -> int:

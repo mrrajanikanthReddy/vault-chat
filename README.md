@@ -6,7 +6,19 @@ call whenever you need it. No accounts, no subscription, no data leaving the
 computer.
 
 Everything here is the Python standard library plus NumPy. The only network
-destination is a model runtime on `localhost`.
+destination is a model runtime on `localhost` — by default
+[colibri](https://github.com/JustVugg/colibri), a CPU-first inference server
+with an OpenAI-compatible API. LM Studio and Ollama still work as optional
+providers.
+
+Three assistants share one local database and one memory:
+
+- **Chat** — multiple conversations, streaming, search, regenerate, stop, and
+  memory that carries what you said in one chat into the next.
+- **Coding** — indexes a repository, sends only the relevant code, and proposes
+  edits as diffs that change nothing until you apply them.
+- **Personal Agent** — tasks and reminders, recall of earlier conversations and
+  preferences, and a small set of tools that run only after you approve them.
 
 ---
 
@@ -46,16 +58,43 @@ a file.
 
 ## Requirements
 
-- Python 3.9 or newer
-- About 2 GB of disk for the tools, plus whatever your models need (5–20 GB)
-- A model runtime: [LM Studio](https://lmstudio.ai) (recommended) or
-  [Ollama](https://ollama.com)
+- Python 3.9 or newer for vault-chat itself
+- An inference server. The default is **colibri**, which needs Python 3.10+ and
+  20 GB or more of disk for its smallest catalog model (`qwen3-coder-30b`, about
+  19 GB, roughly 8–10 tokens/second on a CPU). LM Studio or Ollama work too.
 
-LM Studio is recommended for one reason bigger than its nicer interface: since
-version 0.4.0 it can execute MCP tool servers **for** the model over its API, so
-`agent.py` gets real tool use without implementing an agent loop. The tradeoff is
-that LM Studio is free but closed source; Ollama is open source but brings no MCP.
-Both work here, and both can be installed side by side.
+Colibri runs as its own background process. vault-chat never starts, stops or
+reloads it on its own, so the model stays loaded between requests and
+restarting the web UI costs nothing.
+
+### Set up colibri (once)
+
+These steps follow colibri's `docs/AI_SETUP.md`. Nothing here runs
+automatically; the download step is yours to approve.
+
+```bash
+brew install python@3.12                                  # macOS, only if you have no Python 3.10+
+git clone https://github.com/JustVugg/colibri ~/colibri
+python3.12 ~/colibri/c/setup_hw.py --json                  # what this machine is
+python3.12 ~/colibri/c/coli setup --list --json            # which models fit
+python3.12 ~/colibri/c/coli setup --yes --model qwen3-coder-30b --no-start   # downloads ~19 GB
+python3.12 ~/colibri/c/coli start --background --no-browser
+python3.12 ~/colibri/c/coli status --json                  # wait for server.state == "ready"
+```
+
+`./colibri.py guide` prints the same steps for your machine, and
+`./colibri.py status | start | stop | logs | models | hardware` wrap colibri's own
+commands. `./colibri.py install MODEL` asks before downloading anything. The
+**Model Settings** page in the UI offers start, stop, logs and the guide as well.
+
+vault-chat talks to `http://127.0.0.1:8000/v1` by default. Change
+`COLIBRI_BASE_URL` (environment variable or Model Settings) if colibri listens
+elsewhere. If you started colibri with `--kv-slots N`, set `COLIBRI_KV_SLOTS` to
+the same N so each conversation reuses its own prompt cache.
+
+LM Studio remains useful for one thing colibri does not do: since version 0.4.0
+it can execute MCP tool servers for the model, which the `tools` profile of
+`agent.py` relies on.
 
 ---
 
@@ -94,18 +133,23 @@ a model runtime behind your back — where one is needed it prints the command.
 | `--no-verify` | Skip the self-test |
 | `--check` | Report what is set up and change nothing |
 
-### Then load two models
+### Embeddings are optional
 
-The installer prints the exact commands for *your* machine. They look like:
+Colibri serves chat completions only. Without an embedding model, notes,
+memories, code and past conversations are searched with SQLite full-text search
+(FTS5 with BM25 ranking), which works well for the words you actually wrote. For
+semantic search, point `VAULT_EMBED_URL` at any local OpenAI-compatible
+`/v1/embeddings` server (for example Ollama with `nomic-embed-text`) and run
+`./index.py --rebuild`. Nothing is ever sent to an external embedding service.
+
+With LM Studio or Ollama as the runtime, the installer prints the model commands
+for your machine instead:
 
 ```bash
 lms load qwen3-coder-30b-a3b-instruct --yes      # or whatever it recommended
 lms load text-embedding-nomic-embed-text-v1.5 --yes
 lms server start
 ```
-
-You need both: a chat model for answering, and an embedding model for searching
-your notes.
 
 ---
 
@@ -198,18 +242,81 @@ Add your own in `profiles.json` (see **Configuration**), using the same shape.
 > to five or six tools: small models pick badly from long menus, and every tool
 > schema costs prefill on every single turn.
 
-### `chat.py` — a chat screen in your browser
+### `chat.py` — the assistant in your browser
 
 ```bash
 ./chat.py --open          # serve and open a browser
 ./chat.py --port 9000
 ```
 
-One file, standard library only, no build step and no CDN — it works with the
-network cable unplugged. Streams tokens as they generate, shows which notes an
-answer drew on, and switches between the same profiles the agent uses.
+Standard library only, no build step and no CDN — it works with the network
+cable unplugged. The page lives in `web/` and is served as one self-contained
+document. Sections:
+
+| Section | What it does |
+|---|---|
+| Chat | Conversations with streaming, markdown, syntax highlighting, copy, regenerate and stop |
+| Coding | Choose a project, attach files or paste code; proposed edits appear as diffs with Apply, Reject and Revert; commands run only after approval, with their output logged |
+| Personal Agent | Tasks and reminders, recall, approvals waiting for you, recent tool runs |
+| History | Every conversation, full-text search, rename, tags, delete |
+| Memory | View, search, edit, pin and delete memories, jump to the source conversation, export/import, turn automatic learning on or off |
+| Projects | Repository folders, indexing status, per-project memory |
+| Model Settings | Provider, URLs, model, temperature, top_p, max tokens, context budget; colibri start/stop/logs/guide |
+| System Health | Connection, model, context length, compute, database, counts, and a performance dashboard with benchmark results |
+
+The status bar always shows the provider, the active model, the compute backend,
+the connection state and whether an answer is streaming. When the inference
+server is down or still loading a model, a banner says so and offers Retry
+(and Start colibri when it can find your checkout); history, memory and projects
+keep working, and an unanswered question can be retried later.
 
 Keyboard: Enter sends, Shift+Enter makes a new line, Escape stops generating.
+Stopping keeps the partial answer, marked as stopped.
+
+The original `/api/chat`, `/api/meta` and `/api/session*` endpoints still work
+for scripts.
+
+#### How a turn is assembled
+
+Nothing sends your whole history or memory to the model. Each turn:
+
+1. stores your message, then extracts memories from it (your words only,
+   sensitive details skipped unless you explicitly ask);
+2. classifies the intent (conversation, coding, action, recall, planning) and
+   runs any obvious action directly, such as adding a reminder;
+3. retrieves the most relevant memories, project memory, code, notes and past
+   conversations, each within its own share of a token budget
+   (`CONTEXT_BUDGET_TOKENS`, sized from the model's context length);
+4. keeps the newest whole turns and replaces older ones with a stored summary,
+   while the original messages stay in the database;
+5. puts retrieved text in fenced `<reference>` blocks the model is told never to
+   obey, and places it last so colibri can reuse the cached prompt prefix;
+6. streams the answer, records timing and token counts, and for coding turns
+   turns SEARCH/REPLACE blocks into a pending diff.
+
+#### Approvals
+
+Model output is only ever a suggestion. File edits become proposals you apply
+or reject; `run_command` waits for approval, never uses a shell, refuses `sudo`
+and shell operators, and flags destructive commands. Every tool call (requested,
+approved, rejected, succeeded or failed) is logged in `tool_runs`. A turn that
+has read untrusted retrieved text loses its file-touching tools for the rest of
+that turn.
+
+### `colibri.py` and `bench.py`
+
+```bash
+./colibri.py status            # coli status --json
+./colibri.py start             # coli start --background --no-browser
+./bench.py                     # benchmark the current provider
+./bench.py -p colibri -p ollama -p lmstudio --runs 3   # compare (each must be running)
+./bench.py --cold              # also time a colibri restart until ready
+```
+
+The benchmark records time to first token, tokens per second, total time and
+prompt tokens per prompt, plus the server's RAM and CPU during generation
+(summed over its process tree) and the model's size on disk. Results are stored
+and shown on the System Health page next to the timings of real answers.
 
 It binds to `127.0.0.1` on purpose. There is **no authentication**, so anyone who
 can reach the address can use your model and read answers drawn from your private
@@ -276,12 +383,21 @@ first on a new machine. It covers indexing, incremental updates, deletion,
 retrieval ranking, review scheduling, agent profiles, the tool allowlist, the
 chat server over real HTTP, and the hardware recommendation logic.
 
+The assistant platform has its own suite, run against a fake colibri server
+that speaks the same API (streaming, usage, 503 while loading, 429 when busy):
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
 ---
 
 ## Configuration
 
-Settings resolve in this order: **environment variable → config file →
-built-in default**.
+Settings resolve in this order: **environment variable → value saved in Model
+Settings → config file → built-in default**. Values saved in the UI live in the
+platform database; API keys are stored there too, never sent anywhere but the
+provider you configured, and shown masked.
 
 The config file lives at:
 
@@ -306,7 +422,25 @@ The config file lives at:
 |---|---|---|
 | `VAULT_DIR` | `~/vault` | Where your notes live |
 | `VAULT_DB` | `<vault>/.index/vault.db` | The search index |
-| `VAULT_BACKEND` | `auto` | `auto`, `lmstudio` or `ollama` |
+| `VAULT_BACKEND` | `auto` | `auto`, `colibri`, `lmstudio` or `ollama` (CLI tools) |
+| `LLM_PROVIDER` | `colibri` | Web UI provider: `colibri`, `lmstudio`, `ollama` or `openai` (any OpenAI-compatible local server) |
+| `COLIBRI_BASE_URL` | `http://127.0.0.1:8000/v1` | colibri's OpenAI-compatible endpoint |
+| `COLIBRI_API_KEY` | empty | Only if the server was started with `COLI_API_KEY` |
+| `COLIBRI_KV_SLOTS` | `0` | Match colibri's `--kv-slots` to pin each conversation to a cache slot |
+| `COLIBRI_DIR` | `~/colibri` if present | colibri checkout, for start/stop/status |
+| `COLIBRI_PYTHON` | auto | A Python 3.10+ to run `coli` with |
+| `LMSTUDIO_BASE_URL`, `OLLAMA_BASE_URL` | `:1234/v1`, `:11434/v1` | Optional providers for the web UI |
+| `OPENAI_COMPAT_BASE_URL`, `OPENAI_COMPAT_API_KEY` | empty | Any other local OpenAI-compatible server |
+| `LLM_MODEL` | empty | Model id; empty uses whatever the server has loaded |
+| `LLM_TIMEOUT` | `600` | Seconds to wait for a reply |
+| `TEMPERATURE`, `CODING_TEMPERATURE`, `TOP_P`, `MAX_TOKENS` | `0.2`, `0.1`, server default, `1024` | Generation parameters |
+| `CONTEXT_BUDGET_TOKENS` | `6144` | Prompt budget per turn; smaller means a shorter prefill on a CPU |
+| `MEMORY_AUTO_EXTRACT` | `true` | Learn from your messages; "remember …" works either way |
+| `MEMORY_LLM_EXTRACTION` | `false` | Also ask the model for memories (one extra call per turn) |
+| `USE_NOTES` | `true` | Ground chat and agent answers in the notes vault |
+| `VAULT_EMBED_URL` | empty | Local `/v1` embeddings server; empty means keyword search |
+| `VAULT_DATA_DIR` | `~/.local/share/vault-chat` (`%LOCALAPPDATA%\vault-chat`) | Where the platform database lives |
+| `VAULT_PLATFORM_DB` | `<data dir>/assistant.db` | Conversations, memories, projects, tasks, metrics |
 | `LMSTUDIO_HOST` | `http://127.0.0.1:1234` | |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | |
 | `LM_API_TOKEN` | empty | Required for MCP over the LM Studio API |
@@ -395,8 +529,17 @@ on login" setting in its preferences.
 
 ## Troubleshooting
 
-**"No model runtime found"** — start one: `lms server start`, or `ollama serve`.
-Check with `python3 install.py --check`.
+**"Cannot reach colibri"** — start it: `python3.12 ~/colibri/c/coli start
+--background --no-browser` (or Start on the Model Settings page), then check
+`./colibri.py status`. A 503 means it is still loading the model; wait and
+retry. A "busy" error means its queue is full; retry in a moment.
+
+**"No model runtime found"** (CLI tools) — start one: colibri as above,
+`lms server start`, or `ollama serve`. Check with `python3 install.py --check`.
+
+**The assistant forgot something / remembered something wrong** — open Memory,
+search for it, and edit or delete it. Say "forget …" in any chat to remove
+matching memories.
 
 **"Index is empty"** — run `./index.py`. If it reports 0 files, check `VAULT_DIR`
 and remember that only `.md`, `.markdown` and `.txt` files are indexed, and that

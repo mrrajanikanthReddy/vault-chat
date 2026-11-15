@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vault Chat</title>
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+<nav id="nav">
+  <div class="brand">Vault Chat</div>
+  <div class="group">Assistants</div>
+  <button data-view="chat" class="on">Chat</button>
+  <button data-view="coding">Coding</button>
+  <button data-view="agent">Personal Agent</button>
+  <div class="group">Manage</div>
+  <button data-view="history">History</button>
+  <button data-view="memory">Memory</button>
+  <button data-view="projects">Projects</button>
+  <button data-view="settings">Model Settings</button>
+  <button data-view="health">System Health</button>
+</nav>
+
+<div id="app">
+  <div id="banner" hidden></div>
+
+  <!-- chat, coding and agent share one conversation view -->
+  <section id="v-convo" class="view">
+    <aside class="convlist">
+      <button id="newConv" class="primary">New conversation</button>
+      <input id="convSearch" type="search" placeholder="Search conversations">
+      <div id="convs"></div>
+    </aside>
+    <main class="convmain">
+      <div id="coderBar" class="toolbar" hidden>
+        <label>Project <select id="projectSel"></select></label>
+        <input id="fileFilter" type="search" placeholder="Add file context (type to filter)">
+        <div id="fileHits" class="hits" hidden></div>
+        <div id="chosenFiles" class="chips"></div>
+        <button id="toggleCode" class="small">Paste code</button>
+      </div>
+      <div id="log"></div>
+      <footer>
+        <textarea id="codeInput" rows="6" placeholder="Code to include with your next message" hidden></textarea>
+        <div class="composer">
+          <textarea id="input" rows="1" placeholder="Message"></textarea>
+          <button id="send" class="primary">Send</button>
+        </div>
+        <div class="hint">Enter sends · Shift+Enter new line · Esc stops · <span id="ctxInfo"></span></div>
+      </footer>
+    </main>
+    <aside id="side" class="side">
+      <div id="sideCoding" hidden>
+        <h3>Proposed changes</h3>
+        <div id="proposals"></div>
+        <h3>Run a command <span class="dim">(asks before running)</span></h3>
+        <div class="row"><input id="cmdInput" placeholder="python3 -m unittest"><button id="cmdRun" class="small">Request</button></div>
+        <h3>Execution log</h3>
+        <div id="runs"></div>
+      </div>
+      <div id="sideAgent" hidden>
+        <h3>Waiting for approval</h3>
+        <div id="approvals"></div>
+        <h3>Tasks &amp; reminders</h3>
+        <div class="row"><input id="taskTitle" placeholder="New task"><input id="taskDue" placeholder="when (e.g. tomorrow 9am)" class="narrow"><button id="taskAdd" class="small">Add</button></div>
+        <div id="tasks"></div>
+        <h3>Recent actions</h3>
+        <div id="agentRuns"></div>
+      </div>
+    </aside>
+  </section>
+
+  <section id="v-history" class="view page" hidden>
+    <h2>History</h2>
+    <div class="row">
+      <input id="histSearch" type="search" placeholder="Search every conversation">
+      <select id="histType"><option value="">All types</option><option>chat</option><option>coding</option><option>agent</option></select>
+      <input id="histTag" placeholder="tag" class="narrow">
+    </div>
+    <div id="histList"></div>
+  </section>
+
+  <section id="v-memory" class="view page" hidden>
+    <h2>Memory</h2>
+    <p class="dim">What the assistant remembers across conversations. Only relevant items are sent with a question, never the whole list. Sensitive details are not saved unless you ask.</p>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="memAuto"> Learn from my messages automatically</label>
+      <label class="check"><input type="checkbox" id="memLLM"> Also let the model suggest memories (slower)</label>
+    </div>
+    <div class="row">
+      <input id="memSearch" type="search" placeholder="Search memories">
+      <select id="memCat"><option value="">All categories</option></select>
+      <button id="memExport" class="small">Export</button>
+      <label class="small button">Import<input type="file" id="memImport" accept="application/json" hidden></label>
+      <button id="memWipe" class="small danger">Delete all</button>
+    </div>
+    <div class="card">
+      <div class="row"><input id="memNew" placeholder="Add a memory, e.g. 'I prefer concise answers with code first'">
+        <select id="memNewCat"></select>
+        <label class="check"><input type="checkbox" id="memNewSensitive"> store anyway</label>
+        <button id="memAdd" class="small primary">Save</button></div>
+    </div>
+    <div id="memList"></div>
+  </section>
+
+  <section id="v-projects" class="view page" hidden>
+    <h2>Projects</h2>
+    <div class="card">
+      <div class="row"><input id="projName" placeholder="Name"><input id="projPath" placeholder="Repository folder (optional), e.g. ~/code/billing"></div>
+      <div class="row"><input id="projDesc" placeholder="Description"><button id="projAdd" class="small primary">Create</button></div>
+    </div>
+    <div id="projList"></div>
+    <div id="projDetail"></div>
+  </section>
+
+  <section id="v-settings" class="view page" hidden>
+    <h2>Model Settings</h2>
+    <div class="card" id="colibriCard"></div>
+    <form id="settingsForm"></form>
+  </section>
+
+  <section id="v-health" class="view page" hidden>
+    <h2>System Health</h2>
+    <div id="healthCards" class="cards"></div>
+    <h3>Performance</h3>
+    <div id="metricSummary"></div>
+    <div id="charts"></div>
+    <h3>Benchmark</h3>
+    <div class="row">
+      <label class="check"><input type="checkbox" class="benchP" value="colibri" checked> colibri</label>
+      <label class="check"><input type="checkbox" class="benchP" value="lmstudio"> LM Studio</label>
+      <label class="check"><input type="checkbox" class="benchP" value="ollama"> Ollama</label>
+      <button id="benchRun" class="small primary">Run benchmark</button>
+      <span id="benchState" class="dim"></span>
+    </div>
+    <div id="benchList"></div>
+  </section>
+
+  <div id="status">
+    <span id="stConn" class="dot"></span>
+    <span id="stProvider"></span>
+    <span id="stModel"></span>
+    <span id="stCpu"></span>
+    <span id="stStream"></span>
+    <span id="stPending"></span>
+  </div>
+</div>
+<div id="toast" hidden></div>
+<script>
+//__JS__
+</script>
+</body>
+</html>

@@ -32,11 +32,30 @@ Rules:
 - Be concise. Prefer the author's own wording where it is clear."""
 
 
+def _cap_per_file(ranked, k: int, min_score: float) -> list:
+    hits: list = []
+    per_file: dict[str, int] = {}
+    for score, row in ranked:
+        if score < min_score or len(hits) >= k:
+            break
+        # Allow at most two passages per file so one long note cannot
+        # crowd out everything else.
+        if per_file.get(row["path"], 0) >= 2:
+            continue
+        per_file[row["path"]] = per_file.get(row["path"], 0) + 1
+        hits.append((score, row))
+    return hits
+
+
 def retrieve(conn, question: str, k: int, min_score: float):
-    matrix, rows = v.load_matrix(conn)
-    if not rows:
+    if conn.execute("SELECT COUNT(*) n FROM chunks").fetchone()["n"] == 0:
         sys.exit("Index is empty. Run ./index.py first.")
 
+    # An index built without an embedder holds no vectors: search by keyword.
+    if v.get_meta(conn, "embed_model") == "none" or not v.has_embedder():
+        return _cap_per_file(v.keyword_search_chunks(conn, question, k * 3), k, min_score)
+
+    matrix, rows = v.load_matrix(conn)
     query = v.embed([question])[0]
     if query.shape[0] != matrix.shape[1]:
         sys.exit(
@@ -46,21 +65,7 @@ def retrieve(conn, question: str, k: int, min_score: float):
 
     scores = matrix @ query  # both sides are normalised, so this is cosine
     order = np.argsort(-scores)[: k * 3]
-
-    hits: list = []
-    per_file: dict[str, int] = {}
-    for i in order:
-        score = float(scores[i])
-        if score < min_score or len(hits) >= k:
-            break
-        row = rows[i]
-        # Allow at most two passages per file so one long note cannot
-        # crowd out everything else.
-        if per_file.get(row["path"], 0) >= 2:
-            continue
-        per_file[row["path"]] = per_file.get(row["path"], 0) + 1
-        hits.append((score, row))
-    return hits
+    return _cap_per_file(((float(scores[i]), rows[i]) for i in order), k, min_score)
 
 
 def build_context(hits, budget: int) -> tuple[str, list]:
